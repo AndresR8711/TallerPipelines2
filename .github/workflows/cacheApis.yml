@@ -1,0 +1,60 @@
+name: On This Day API con Cache
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: 'Mes en formato MM (ej: 08)'
+        required: true
+        type: string
+      day:
+        description: 'Día en formato DD (ej: 20)'
+        required: true
+        type: string
+
+jobs:
+  call_api:
+    runs-on: ubuntu-latest
+    env:
+      LANGUAGE: ${{ vars.LANGUAGE }} # Variable de entorno en Settings -> Variables
+      MONTH: ${{ github.event.inputs.month }}
+      DAY: ${{ github.event.inputs.day }}
+
+    steps:
+      - name: Configurar carpeta de cache
+        run: mkdir -p cache
+
+      - name: Restaurar cache si existe
+        id: cache-api
+        uses: actions/cache@v4
+        with:
+          path: cache
+          key: onthisday-${{ env.LANGUAGE }}-${{ env.MONTH }}-${{ env.DAY }}
+
+      - name: Verificar si ya existe cache
+        id: check-cache
+        run: |
+          FILE="cache/${LANGUAGE}-${MONTH}-${DAY}.json"
+          if [ -f "$FILE" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Consumir API solo si no hay cache
+        if: steps.check-cache.outputs.found == 'false'
+        run: |
+          echo "Consultando API On This Day..."
+          RESPONSE=$(curl -s "https://byabbe.se/on-this-day/${MONTH}/${DAY}/events.json?lang=$LANGUAGE")
+          echo "$RESPONSE" > cache/${LANGUAGE}-${MONTH}-${DAY}.json
+
+      - name: Mostrar resultado desde cache
+        run: |
+          echo "Mostrando resultados desde cache:"
+          cat cache/${LANGUAGE}-${MONTH}-${DAY}.json | jq '.'
+
+      - name: Subir archivo como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultado-${{ env.LANGUAGE }}-${{ env.MONTH }}-${{ env.DAY }}
+          path: cache/${{ env.LANGUAGE }}-${{ env.MONTH }}-${{ env.DAY }}.json
