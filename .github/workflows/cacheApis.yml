@@ -1,4 +1,4 @@
-name: On This Day API con Cache
+name: On This Day - HTML a PDF
 
 on:
   workflow_dispatch:
@@ -13,48 +13,78 @@ on:
         type: string
 
 jobs:
-  call_api:
+  fetch-events:
+    name: Obtener eventos de la API
     runs-on: ubuntu-latest
     env:
-      LANGUAGE: ${{ vars.LANGUAGE }} # Variable de entorno en Settings -> Variables
+      LANG: ${{ vars.LANG }}
       MONTH: ${{ github.event.inputs.month }}
       DAY: ${{ github.event.inputs.day }}
 
     steps:
-      - name: Configurar carpeta de cache
-        run: mkdir -p cache
-
-      - name: Restaurar cache si existe
-        id: cache-api
+      - name: Configurar cache para respuesta API
         uses: actions/cache@v4
+        id: cache
         with:
           path: cache
-          key: onthisday-${{ env.LANGUAGE }}-${{ env.MONTH }}-${{ env.DAY }}
+          key: onthisday-${{ env.LANG }}-${{ env.MONTH }}-${{ env.DAY }}
 
-      - name: Verificar si ya existe cache
-        id: check-cache
+      - name: Crear carpeta cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: mkdir -p cache
+
+      - name: Llamar API solo si no existe en cache
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          FILE="cache/${LANGUAGE}-${MONTH}-${DAY}.json"
-          if [ -f "$FILE" ]; then
-            echo "found=true" >> $GITHUB_OUTPUT
-          else
-            echo "found=false" >> $GITHUB_OUTPUT
-          fi
+          curl -s "https://byabbe.se/on-this-day/${MONTH}/${DAY}/events.json?lang=${LANG}" > cache/response.json
 
-      - name: Consumir API solo si no hay cache
-        if: steps.check-cache.outputs.found == 'false'
+      - name: Verificar respuesta en cache
+        run: cat cache/response.json | jq '.selected | length'
+
+      - name: Exportar matriz dinámica
+        id: matrix
         run: |
-          echo "Consultando API On This Day..."
-          RESPONSE=$(curl -s "https://byabbe.se/on-this-day/${MONTH}/${DAY}/events.json?lang=$LANGUAGE")
-          echo "$RESPONSE" > cache/${LANGUAGE}-${MONTH}-${DAY}.json
+          EVENTS=$(jq -c '.selected' cache/response.json)
+          echo "events=$EVENTS" >> $GITHUB_OUTPUT
 
-      - name: Mostrar resultado desde cache
+    outputs:
+      events: ${{ steps.matrix.outputs.events }}
+      lang: ${{ env.LANG }}
+      month: ${{ env.MONTH }}
+      day: ${{ env.DAY }}
+
+  generate-pdfs:
+    name: Generar PDFs
+    needs: fetch-events
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # resiliencia: no detiene todo si uno falla
+      matrix:
+        event: ${{ fromJson(needs.fetch-events.outputs.events) }}
+
+    env:
+      LANG: ${{ needs.fetch-events.outputs.lang }}
+      MONTH: ${{ needs.fetch-events.outputs.month }}
+      DAY: ${{ needs.fetch-events.outputs.day }}
+
+    steps:
+      - name: Extraer título y URL
+        id: info
         run: |
-          echo "Mostrando resultados desde cache:"
-          cat cache/${LANGUAGE}-${MONTH}-${DAY}.json | jq '.'
+          TITLE=$(echo '${{ matrix.event }}' | jq -r '.pages[0].title' | tr ' ' '_' | tr -cd '[:alnum:]_-')
+          URL=$(echo '${{ matrix.event }}' | jq -r '.pages[0].content_urls.desktop.page')
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
-      - name: Subir archivo como artifact
+      - name: Convertir HTML a PDF
+        uses: fifsky/html-to-pdf-action@master
+        with:
+          htmlFile: ${{ steps.info.outputs.url }}
+          outputFile: ${{ env.MONTH }}-${{ env.DAY }}-${{ steps.info.outputs.title }}.pdf
+
+      - name: Subir artefacto PDF
         uses: actions/upload-artifact@v4
         with:
-          name: resultado-${{ env.LANGUAGE }}-${{ env.MONTH }}-${{ env.DAY }}
-          path: cache/${{ env.LANGUAGE }}-${{ env.MONTH }}-${{ env.DAY }}.json
+          name: ${{ env.MONTH }}-${{ env.DAY }}-${{ steps.info.outputs.title }}
+          path: ${{ env.MONTH }}-${{ env.DAY }}-${{ steps.info.outputs.title }}.pdf
+          retention-days: 1
