@@ -12,80 +12,100 @@ on:
         required: true
         type: string
 
+env:
+  LANG: ${{ vars.LANG || 'es' }}
+
 jobs:
   fetch-events:
     name: Obtener eventos de la API
     runs-on: ubuntu-latest
-    env:
-      LANG: ${{ vars.LANG }}
-      MONTH: ${{ github.event.inputs.month }}
-      DAY: ${{ github.event.inputs.day }}
+    outputs:
+      events-matrix: ${{ steps.set-matrix.outputs.events-matrix }}
+      lang: ${{ env.LANG }}
+      month: ${{ inputs.month }}
+      day: ${{ inputs.day }}
 
     steps:
-      - name: Configurar cache para respuesta API
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configurar clave de cache
+        id: cache-key
+        run: |
+          echo "key=onthisday-$LANG-${{ inputs.month }}-${{ inputs.day }}" >> $GITHUB_OUTPUT
+
+      - name: Restaurar respuesta de API desde cache
         uses: actions/cache@v4
-        id: cache
+        id: api-cache
         with:
-          path: cache
-          key: onthisday-${{ env.LANG }}-${{ env.MONTH }}-${{ env.DAY }}
+          path: api-response.json
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: |
+            onthisday-$LANG-${{ inputs.month }}-${{ inputs.day }}
 
-      - name: Crear carpeta cache
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: mkdir -p cache
-
-      - name: Llamar API solo si no existe en cache
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Llamar API si no está en cache
+        if: steps.api-cache.outputs.cache-hit != 'true'
         run: |
-          curl -s "https://byabbe.se/on-this-day/${MONTH}/${DAY}/events.json?lang=${LANG}" > cache/response.json
+          curl -s -H "User-Agent: GitHub Actions Pipeline" \
+            "https://api.wikimedia.org/feed/v1/wikipedia/$LANG/onthisday/selected/${{ inputs.month }}/${{ inputs.day }}" \
+            > api-response.json
 
-      - name: Verificar respuesta en cache
-        run: cat cache/response.json | jq '.selected | length'
-       
-
-      - name: Exportar matriz dinámica
-        id: matrix
+      - name: Verificar respuesta API
         run: |
-          EVENTS=$(jq -c '.selected' cache/response.json)
-          echo "events=$EVENTS" >> $GITHUB_OUTPUT
+          echo "Número de eventos:"
+          jq '.selected | length' api-response.json
 
-    outputs:
-      events: ${{ steps.matrix.outputs.events }}
-      lang: ${{ env.LANG }}
-      month: ${{ env.MONTH }}
-      day: ${{ env.DAY }}
+      - name: Configurar matriz dinámica
+        id: set-matrix
+        run: |
+          EVENTS_JSON=$(jq -c '.selected' api-response.json)
+          echo "events-matrix=$EVENTS_JSON" >> $GITHUB_OUTPUT
 
   generate-pdfs:
     name: Generar PDFs
     needs: fetch-events
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # resiliencia: no detiene todo si uno falla
+      fail-fast: false
       matrix:
-        event: ${{ fromJson(needs.fetch-events.outputs.events) }}
-
-    env:
-      LANG: ${{ needs.fetch-events.outputs.lang }}
-      MONTH: ${{ needs.fetch-events.outputs.month }}
-      DAY: ${{ needs.fetch-events.outputs.day }}
+        event: ${{ fromJson(needs.fetch-events.outputs.events-matrix) }}
 
     steps:
-      - name: Extraer título y URL
-        id: info
-        run: |
-          TITLE=$(echo '${{ matrix.event }}' | jq -r '.pages[0].title' | tr ' ' '_' | tr -cd '[:alnum:]_-')
-          URL=$(echo '${{ matrix.event }}' | jq -r '.pages[0].content_urls.desktop.page')
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Convertir HTML a PDF
-        uses: fifsky/html-to-pdf-action@master
+      - name: Extraer título y URL del evento
+        id: event-info
+        run: |
+          # Convertir el evento a JSON y extraer datos
+          EVENT_JSON='${{ toJson(matrix.event) }}'
+          TITLE=$(echo "$EVENT_JSON" | jq -r '.pages[0].title')
+          URL=$(echo "$EVENT_JSON" | jq -r '.pages[0].content_urls.desktop.page')
+          
+          # Sanitizar el título para nombre de archivo
+          SANITIZED_TITLE=$(echo "$TITLE" | tr ' ' '_' | tr -cd '[:alnum:]_-')
+          
+          echo "title=$SANITIZED_TITLE" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Evento: $TITLE"
+          echo "URL: $URL"
+
+      - name: Convertir URL a PDF
+        uses: macbre/url-to-pdf-action@v1.1
         with:
-          htmlFile: ${{ steps.info.outputs.url }}
-          outputFile: ${{ env.MONTH }}-${{ env.DAY }}-${{ steps.info.outputs.title }}.pdf
+          url: ${{ steps.event-info.outputs.url }}
+          output: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf
+          format: A4
+          printBackground: true
+          waitFor: networkidle0
 
       - name: Subir artefacto PDF
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.MONTH }}-${{ env.DAY }}-${{ steps.info.outputs.title }}
-          path: ${{ env.MONTH }}-${{ env.DAY }}-${{ steps.info.outputs.title }}.pdf
+          name: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}
+          path: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf
           retention-days: 1
+
+      - name: Mostrar información del PDF generado
+        run: |
+          echo "PDF generado: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf"
