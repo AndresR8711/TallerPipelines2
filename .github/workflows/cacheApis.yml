@@ -1,4 +1,4 @@
-name: On This Day - HTML a PDF
+name: On This Day - Obtener Eventos
 
 on:
   workflow_dispatch:
@@ -17,13 +17,11 @@ env:
 
 jobs:
   fetch-events:
-    name: Obtener eventos de la API
+    name: Obtener eventos históricos
     runs-on: ubuntu-latest
     outputs:
-      events-matrix: ${{ steps.set-matrix.outputs.events-matrix }}
-      lang: ${{ env.LANG }}
-      month: ${{ inputs.month }}
-      day: ${{ inputs.day }}
+      total-events: ${{ steps.count-events.outputs.total }}
+      api-data: ${{ steps.save-data.outputs.api-data }}
 
     steps:
       - name: Checkout repository
@@ -34,7 +32,7 @@ jobs:
         run: |
           echo "key=onthisday-$LANG-${{ inputs.month }}-${{ inputs.day }}" >> $GITHUB_OUTPUT
 
-      - name: Restaurar respuesta de API desde cache
+      - name: Restaurar respuesta desde cache
         uses: actions/cache@v4
         id: api-cache
         with:
@@ -46,70 +44,43 @@ jobs:
       - name: Llamar API si no está en cache
         if: steps.api-cache.outputs.cache-hit != 'true'
         run: |
+          echo "Consultando API para $LANG-${{ inputs.month }}-${{ inputs.day }}"
           curl -s -H "User-Agent: GitHub Actions Pipeline" \
             "https://api.wikimedia.org/feed/v1/wikipedia/$LANG/onthisday/selected/${{ inputs.month }}/${{ inputs.day }}" \
             > api-response.json
 
-      - name: Verificar respuesta API
+      - name: Contar eventos obtenidos
+        id: count-events
         run: |
-          echo "Número de eventos:"
-          jq '.selected | length' api-response.json
+          TOTAL_EVENTS=$(jq '.selected | length' api-response.json)
+          echo "total=$TOTAL_EVENTS" >> $GITHUB_OUTPUT
+          echo "✅ Se encontraron $TOTAL_EVENTS eventos históricos"
 
-      - name: Configurar matriz dinámica
-        id: set-matrix
+      - name: Mostrar preview de eventos
         run: |
-          EVENTS_JSON=$(jq -c '.selected' api-response.json)
-          echo "events-matrix=$EVENTS_JSON" >> $GITHUB_OUTPUT
+          echo "📅 Eventos del ${{ inputs.day }}/${{ inputs.month }}:"
+          jq -r '.selected[] | "• \(.pages[0].title)"' api-response.json | head -5
+          if [ $(jq '.selected | length' api-response.json) -gt 5 ]; then
+            echo "... y más"
+          fi
 
-  generate-pdfs:
-    name: Generar PDFs
-    needs: fetch-events
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        event: ${{ fromJson(needs.fetch-events.outputs.events-matrix) }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Extraer título y URL del evento
-        id: event-info
+      - name: Guardar datos para uso futuro
+        id: save-data
         run: |
-          EVENT_JSON='${{ toJson(matrix.event) }}'
-          TITLE=$(echo "$EVENT_JSON" | jq -r '.pages[0].title')
-          URL=$(echo "$EVENT_JSON" | jq -r '.pages[0].content_urls.desktop.page')
-          
-          # Sanitizar el título para nombre de archivo
-          SANITIZED_TITLE=$(echo "$TITLE" | tr ' ' '_' | tr -cd '[:alnum:]áéíóúÁÉÍÓÚñÑüÜ_-')
-          
-          echo "title=$SANITIZED_TITLE" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "Evento: $TITLE"
-          echo "URL: $URL"
+          API_DATA=$(cat api-response.json | jq -c .)
+          echo "api-data=$API_DATA" >> $GITHUB_OUTPUT
 
-      - name: Convertir URL a PDF con Browserless
-        uses: browserless/goto-action@v1
-        with:
-          url: ${{ steps.event-info.outputs.url }}
-          pdf: true
-          pdf-options: '{"format": "A4", "printBackground": true, "margin": {"top": "20mm", "right": "20mm", "bottom": "20mm", "left": "20mm"}}'
-          output: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf
-          wait-for: networkidle0
-          timeout: 30000
-
-      - name: Subir artefacto PDF
+      - name: Subir respuesta como artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}
-          path: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf
+          name: api-response-$LANG-${{ inputs.month }}-${{ inputs.day }}
+          path: api-response.json
           retention-days: 1
 
-      - name: Mostrar información del PDF generado
+      - name: Mostrar resumen final
         run: |
-          echo "🎉 PDF generado exitosamente:"
-          echo "Nombre: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf"
-          if [ -f "${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf" ]; then
-            echo "Tamaño: $(du -h ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf | cut -f1)"
-          fi
+          echo "🎉 Proceso completado"
+          echo "Idioma: $LANG"
+          echo "Fecha: ${{ inputs.day }}/${{ inputs.month }}"
+          echo "Eventos encontrados: ${{ steps.count-events.outputs.total }}"
+          echo "Cache hit: ${{ steps.api-cache.outputs.cache-hit }}"
