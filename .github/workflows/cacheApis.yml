@@ -77,27 +77,27 @@ jobs:
       - name: Extraer título y URL del evento
         id: event-info
         run: |
-          # Convertir el evento a JSON y extraer datos
           EVENT_JSON='${{ toJson(matrix.event) }}'
           TITLE=$(echo "$EVENT_JSON" | jq -r '.pages[0].title')
           URL=$(echo "$EVENT_JSON" | jq -r '.pages[0].content_urls.desktop.page')
           
           # Sanitizar el título para nombre de archivo
-          SANITIZED_TITLE=$(echo "$TITLE" | tr ' ' '_' | tr -cd '[:alnum:]_-')
+          SANITIZED_TITLE=$(echo "$TITLE" | tr ' ' '_' | tr -cd '[:alnum:]áéíóúÁÉÍÓÚñÑüÜ_-')
           
           echo "title=$SANITIZED_TITLE" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
           echo "Evento: $TITLE"
           echo "URL: $URL"
 
-      - name: Convertir URL a PDF
-        uses: macbre/url-to-pdf-action@v1.1
+      - name: Convertir URL a PDF con Browserless
+        uses: browserless/goto-action@v1
         with:
           url: ${{ steps.event-info.outputs.url }}
+          pdf: true
+          pdf-options: '{"format": "A4", "printBackground": true, "margin": {"top": "20mm", "right": "20mm", "bottom": "20mm", "left": "20mm"}}'
           output: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf
-          format: A4
-          printBackground: true
-          waitFor: networkidle0
+          wait-for: networkidle0
+          timeout: 30000
 
       - name: Subir artefacto PDF
         uses: actions/upload-artifact@v4
@@ -108,4 +108,8 @@ jobs:
 
       - name: Mostrar información del PDF generado
         run: |
-          echo "PDF generado: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf"
+          echo "🎉 PDF generado exitosamente:"
+          echo "Nombre: ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf"
+          if [ -f "${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf" ]; then
+            echo "Tamaño: $(du -h ${{ needs.fetch-events.outputs.month }}-${{ needs.fetch-events.outputs.day }}-${{ steps.event-info.outputs.title }}.pdf | cut -f1)"
+          fi
