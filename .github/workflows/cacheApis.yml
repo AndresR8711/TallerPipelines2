@@ -39,7 +39,8 @@ jobs:
           curl -s "https://byabbe.se/on-this-day/${MONTH}/${DAY}/events.json?lang=${LANG}" > cache/response.json
 
       - name: Verificar respuesta en cache
-        run: cat cache/response.json | jq '.selected | length else 0 end' cache/response.json
+        run: cat cache/response.json | jq '.selected | length'
+       
 
       - name: Exportar matriz dinámica
         id: matrix
